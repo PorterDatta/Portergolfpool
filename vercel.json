@@ -1,5 +1,5 @@
 {
   "crons": [
-    { "path": "/api/sync-scores", "schedule": "*/3 * * * *" }
+    { "path": "/api/sync-scores", "schedule": "0 12 * * *" }
   ]
 }
