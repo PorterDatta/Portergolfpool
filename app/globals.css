@@ -1,0 +1,56 @@
+/* app/globals.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #0b0f17;
+  --card: #131a26;
+  --card-2: #1a2333;
+  --accent: #16a34a;
+  --accent-2: #22c55e;
+  --line: #23304a;
+}
+
+html, body {
+  background: var(--bg);
+  color: #e6edf7;
+  -webkit-font-smoothing: antialiased;
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-[#23304a] bg-[#131a26] shadow-lg;
+  }
+  .stat-pill {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-semibold;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5
+           font-semibold transition active:scale-[0.98] disabled:opacity-40
+           disabled:cursor-not-allowed;
+  }
+  .btn-primary { @apply btn bg-green-600 hover:bg-green-500 text-white; }
+  .btn-ghost   { @apply btn bg-[#1a2333] hover:bg-[#22304a] text-slate-200; }
+  .btn-danger  { @apply btn bg-red-600/90 hover:bg-red-500 text-white; }
+  .input {
+    @apply w-full rounded-xl border border-[#23304a] bg-[#0e141f] px-4 py-2.5
+           text-sm text-slate-100 outline-none focus:border-green-500;
+  }
+  .table-row {
+    @apply border-b border-[#1c2740] hover:bg-[#18213200] transition-colors;
+  }
+  .rank-badge {
+    @apply flex h-8 w-8 items-center justify-center rounded-lg text-sm font-bold;
+  }
+}
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: #23304a; border-radius: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: white; color: black; }
+  .card { border: 1px solid #ccc; box-shadow: none; }
+}
