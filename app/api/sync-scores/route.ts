@@ -32,34 +32,43 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, message: 'no live data yet' });
   }
 
-  const touchedSeasons = new Set<string>();
+  // 1) Batch-upsert ALL golfers at once
+  const { error: gErr } = await supabaseAdmin.from('golfers').upsert(
+    field.map((g) => ({
+      external_id: g.externalId,
+      full_name: g.fullName,
+      country: g.country ?? null,
+      headshot_url: g.headshotUrl ?? null,
+      world_rank: g.worldRank ?? null,
+      fedex_rank: g.fedexRank ?? null,
+    })),
+    { onConflict: 'external_id' }
+  );
+  if (gErr) return NextResponse.json({ error: gErr.message }, { status: 500 });
 
+  // 2) Fetch their ids in one query
+  const externalIds = field.map((g) => g.externalId);
+  const { data: golferRows } = await supabaseAdmin
+    .from('golfers')
+    .select('id, external_id')
+    .in('external_id', externalIds);
+
+  const idByExternal = new Map(
+    (golferRows ?? []).map((r: any) => [r.external_id, r.id])
+  );
+
+  // 3) Batch-upsert scores for every active week
+  const touchedSeasons = new Set<string>();
   for (const week of activeWeeks) {
     touchedSeasons.add(week.season_id);
 
-    for (const g of field) {
-      const { data: golfer } = await supabaseAdmin
-        .from('golfers')
-        .upsert(
-          {
-            external_id: g.externalId,
-            full_name: g.fullName,
-            country: g.country ?? null,
-            headshot_url: g.headshotUrl ?? null,
-            world_rank: g.worldRank ?? null,
-            fedex_rank: g.fedexRank ?? null,
-          },
-          { onConflict: 'external_id' }
-        )
-        .select('id')
-        .single();
-
-      if (!golfer) continue;
-
-      await supabaseAdmin.from('golfer_scores').upsert(
-        {
+    const scoreRows = field
+      .map((g) => {
+        const gid = idByExternal.get(g.externalId);
+        if (!gid) return null;
+        return {
           week_id: week.id,
-          golfer_id: golfer.id,
+          golfer_id: gid,
           position: g.position ?? null,
           position_num: g.positionNum ?? null,
           today: g.today ?? null,
@@ -67,12 +76,16 @@ export async function GET(req: NextRequest) {
           fedex_points: g.fedexPoints,
           status: g.status,
           updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'week_id,golfer_id' }
-      );
-    }
+        };
+      })
+      .filter(Boolean);
+
+    await supabaseAdmin
+      .from('golfer_scores')
+      .upsert(scoreRows as any[], { onConflict: 'week_id,golfer_id' });
   }
 
+  // 4) Recompute standings for touched seasons
   for (const seasonId of touchedSeasons) {
     await supabaseAdmin.rpc('recompute_standings', { p_season_id: seasonId });
   }
