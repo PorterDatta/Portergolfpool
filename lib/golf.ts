@@ -1,10 +1,10 @@
 // lib/golf.ts
 // Live golf data — 100% FREE. No API key required.
 //
-// ESPN public scoreboard JSON is the PRIMARY source (free, no key).
+// PRIMARY: ESPN public scoreboard JSON (free, no key).
 // FedEx Cup points are DERIVED from finishing position using the fixed
-// playoff points table below, with correct TIE-SPLITTING.
-// DataGolf is only used if a key happens to be set (optional override).
+// playoff points table, with correct TIE-SPLITTING.
+// DataGolf is only used if DATAGOLF_API_KEY happens to be set.
 
 export interface GolferRow {
   externalId: string;
@@ -13,14 +13,15 @@ export interface GolferRow {
   headshotUrl?: string;
   worldRank?: number;
   fedexRank?: number;
-  position?: string;
-  positionNum?: number;
-  today?: number;
-  totalToPar?: number;
-  fedexPoints: number;
+  position?: string;       // "T4", "CUT", "WD"
+  positionNum?: number;    // numeric for sorting / points
+  today?: number;          // today score to par
+  totalToPar?: number;     // tournament score to par
+  fedexPoints: number;     // FedEx Cup points earned (tie-aware)
   status: 'active' | 'cut' | 'wd' | 'dq' | 'finished';
 }
 
+// --- Official FedEx Cup points by finishing SLOT ----------------------
 const PLAYOFF_POINTS: Record<number, number> = {
   1: 2000, 2: 1200, 3: 760, 4: 540, 5: 440, 6: 400, 7: 360, 8: 340, 9: 320,
   10: 300, 11: 280, 12: 260, 13: 244, 14: 228, 15: 212, 16: 196, 17: 180,
@@ -70,10 +71,13 @@ function applyTieAwarePoints(field: GolferRow[]): GolferRow[] {
   return field;
 }
 
+// ---------------------------------------------------------------------
+// ESPN (PRIMARY — free, no key)
+// ---------------------------------------------------------------------
 async function fromESPN(): Promise<GolferRow[] | null> {
   try {
     const res = await fetch(
-      'https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard',
+      `https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard?_=${Date.now()}`,
       { cache: 'no-store' }
     );
     if (!res.ok) return null;
@@ -84,6 +88,9 @@ async function fromESPN(): Promise<GolferRow[] | null> {
 
     const rows: GolferRow[] = players.map((c: any): GolferRow => {
       const a = c.athlete ?? {};
+      // IMPORTANT: in ESPN's feed the golfer id lives on the COMPETITOR (c.id),
+      // and athlete often has no id (pre-tournament). Use c.id first.
+      const externalId = String(c.id ?? a.id ?? c.uid ?? a.displayName);
       const posStr =
         c.status?.position?.displayName ??
         c.status?.position?.id ??
@@ -93,15 +100,25 @@ async function fromESPN(): Promise<GolferRow[] | null> {
       const cut = /cut/.test(desc);
       const wd = /withdraw/.test(desc);
       const dq = /disqualif/.test(desc);
+
+      // score can be "E", "-3", "+2", or a number
+      const rawScore = c.score;
+      let totalToPar: number | undefined;
+      if (rawScore === 'E') totalToPar = 0;
+      else if (rawScore != null && rawScore !== '') {
+        const n = Number(String(rawScore).replace('+', ''));
+        totalToPar = Number.isNaN(n) ? undefined : n;
+      }
+
       return {
-        externalId: String(a.id),
-        fullName: a.displayName,
+        externalId,
+        fullName: a.displayName ?? a.fullName ?? 'Unknown',
         country: a.flag?.alt,
         headshotUrl: a.headshot?.href,
-        position: posStr,
+        position: posStr || undefined,
         positionNum: posNum,
         today: Number(c.linescores?.at(-1)?.value) || undefined,
-        totalToPar: Number(c.score),
+        totalToPar,
         fedexPoints: 0,
         status: cut ? 'cut' : wd ? 'wd' : dq ? 'dq'
               : c.status?.type?.completed ? 'finished' : 'active',
@@ -114,6 +131,9 @@ async function fromESPN(): Promise<GolferRow[] | null> {
   }
 }
 
+// ---------------------------------------------------------------------
+// DATAGOLF (OPTIONAL — only if a key is present)
+// ---------------------------------------------------------------------
 async function fromDataGolf(): Promise<GolferRow[] | null> {
   const key = process.env.DATAGOLF_API_KEY;
   if (!key) return null;
@@ -157,6 +177,9 @@ async function fromDataGolf(): Promise<GolferRow[] | null> {
   }
 }
 
+// ---------------------------------------------------------------------
+// Public: pull the live field. FREE by default (ESPN).
+// ---------------------------------------------------------------------
 export async function fetchLiveField(): Promise<GolferRow[]> {
   const espn = await fromESPN();
   if (espn && espn.length) return espn;
