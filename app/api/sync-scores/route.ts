@@ -32,9 +32,17 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: true, message: 'no live data yet' });
   }
 
-  // 1) Batch-upsert ALL golfers at once
+  // Remove duplicate golfers ESPN may list twice
+  const seen = new Set<string>();
+  const dedupedField = field.filter((g) => {
+    if (!g.externalId || seen.has(g.externalId)) return false;
+    seen.add(g.externalId);
+    return true;
+  });
+
+  // 1) Batch-upsert all golfers at once
   const { error: gErr } = await supabaseAdmin.from('golfers').upsert(
-    field.map((g) => ({
+    dedupedField.map((g) => ({
       external_id: g.externalId,
       full_name: g.fullName,
       country: g.country ?? null,
@@ -47,7 +55,7 @@ export async function GET(req: NextRequest) {
   if (gErr) return NextResponse.json({ error: gErr.message }, { status: 500 });
 
   // 2) Fetch their ids in one query
-  const externalIds = field.map((g) => g.externalId);
+  const externalIds = dedupedField.map((g) => g.externalId);
   const { data: golferRows } = await supabaseAdmin
     .from('golfers')
     .select('id, external_id')
@@ -62,7 +70,7 @@ export async function GET(req: NextRequest) {
   for (const week of activeWeeks) {
     touchedSeasons.add(week.season_id);
 
-    const scoreRows = field
+    const scoreRows = dedupedField
       .map((g) => {
         const gid = idByExternal.get(g.externalId);
         if (!gid) return null;
@@ -85,7 +93,7 @@ export async function GET(req: NextRequest) {
       .upsert(scoreRows as any[], { onConflict: 'week_id,golfer_id' });
   }
 
-  // 4) Recompute standings for touched seasons
+  // 4) Recompute standings
   for (const seasonId of touchedSeasons) {
     await supabaseAdmin.rpc('recompute_standings', { p_season_id: seasonId });
   }
@@ -93,7 +101,7 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     ok: true,
     weeks: activeWeeks.length,
-    golfers: field.length,
+    golfers: dedupedField.length,
     updated_at: new Date().toISOString(),
   });
 }
