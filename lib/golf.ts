@@ -1,10 +1,18 @@
 // lib/golf.ts
-// Live golf data — 100% FREE. No API key required.
+// Live golf data — 100% FREE (ESPN public scoreboard, no API key).
 //
-// PRIMARY: ESPN public scoreboard JSON (free, no key).
-// FedEx Cup points are DERIVED from finishing position using the fixed
-// playoff points table, with correct TIE-SPLITTING.
-// DataGolf is only used if DATAGOLF_API_KEY happens to be set.
+// SCORING MODEL: OFFICIAL FEDEX CUP POINTS by finishing position.
+// Points are ONLY assigned from a REAL leaderboard position, with proper
+// tie-splitting (players tied for a spot split the sum of the slots they
+// occupy). Highest total wins.
+//
+// CRITICAL FIX: before a tournament starts, ESPN reports every player at "E"
+// with NO real position (status = "pre"/"scheduled"). In that case we assign
+// ZERO points and no position — so the board shows the whole field at E / 0
+// instead of a fake leaderboard built from ESPN's listing order.
+//
+// The FedEx Cup Playoff events have NO CUT — everyone plays 4 rounds — so no
+// missed-cut handling is needed. WD/DQ simply earn 0 points.
 
 export interface GolferRow {
   externalId: string;
@@ -13,38 +21,25 @@ export interface GolferRow {
   headshotUrl?: string;
   worldRank?: number;
   fedexRank?: number;
-  position?: string;       // "T4", "CUT", "WD"
-  positionNum?: number;    // numeric for sorting / points
+  position?: string;       // "T4", "1", "WD"  (undefined before play starts)
+  positionNum?: number;    // numeric for sorting
   today?: number;          // today score to par
   totalToPar?: number;     // tournament score to par
-  fedexPoints: number;     // FedEx Cup points earned (tie-aware)
+  fedexPoints: number;     // official FedEx Cup points earned. Higher = better.
   status: 'active' | 'cut' | 'wd' | 'dq' | 'finished';
 }
 
-// --- Official FedEx Cup points by finishing SLOT ----------------------
-const PLAYOFF_POINTS: Record<number, number> = {
-  1: 2000, 2: 1200, 3: 760, 4: 540, 5: 440, 6: 400, 7: 360, 8: 340, 9: 320,
-  10: 300, 11: 280, 12: 260, 13: 244, 14: 228, 15: 212, 16: 196, 17: 180,
-  18: 164, 19: 148, 20: 140, 21: 132, 22: 124, 23: 116, 24: 108, 25: 100,
-  26: 96, 27: 92, 28: 88, 29: 84, 30: 80, 31: 76, 32: 72, 33: 68, 34: 64,
-  35: 60.8, 36: 57.6, 37: 54.4, 38: 51.2, 39: 48, 40: 44.8, 41: 41.6,
-  42: 38.4, 43: 35.2, 44: 32, 45: 29.6, 46: 27.2, 47: 24.8, 48: 22.72,
-  49: 20.8, 50: 19.36, 51: 18.24, 52: 17.44, 53: 16.8, 54: 16.32, 55: 16,
-  56: 15.68, 57: 15.36, 58: 15.04, 59: 14.72, 60: 14.4, 61: 14.08,
-  62: 13.76, 63: 13.44, 64: 13.12, 65: 12.8, 66: 12.48, 67: 12.16,
-  68: 11.84, 69: 11.52, 70: 11.2,
-};
-
-function slotPoints(slot: number): number {
-  return PLAYOFF_POINTS[slot] ?? 0;
-}
-
-export function pointsForPosition(pos: number, tieCount = 1): number {
-  if (!pos || pos < 1) return 0;
-  let sum = 0;
-  for (let s = pos; s < pos + tieCount; s++) sum += slotPoints(s);
-  return Math.round((sum / tieCount) * 100) / 100;
-}
+// Official FedEx Cup Playoff points payout by finishing slot (St. Jude / BMW).
+// Index 0 = 1st place. Extended to cover a full playoff field.
+const PLAYOFF_POINTS: number[] = [
+  2000, 1200, 760, 540, 440, 400, 360, 340, 320, 300,   // 1-10
+  280, 260, 244, 228, 212, 196, 180, 164, 148, 140,     // 11-20
+  132, 124, 116, 108, 100, 96, 92, 88, 84, 80,          // 21-30
+  76, 72, 68, 64, 60.8, 57.6, 54.4, 51.2, 48, 44.8,     // 31-40
+  41.6, 38.4, 35.2, 32, 29.6, 27.2, 24.8, 22.4, 20.8, 19.2, // 41-50
+  18.4, 17.6, 16.8, 16, 15.2, 14.4, 13.6, 12.8, 12.4, 12,   // 51-60
+  11.6, 11.2, 10.8, 10.4, 10, 9.6, 9.2, 8.8, 8.4, 8,       // 61-70
+];
 
 function parsePosition(p?: string): number | undefined {
   if (!p) return undefined;
@@ -52,23 +47,13 @@ function parsePosition(p?: string): number | undefined {
   return Number.isNaN(n) ? undefined : n;
 }
 
-function applyTieAwarePoints(field: GolferRow[]): GolferRow[] {
-  const byPos = new Map<number, GolferRow[]>();
-  for (const g of field) {
-    if (g.status === 'cut' || g.status === 'wd' || g.status === 'dq') {
-      g.fedexPoints = 0;
-      continue;
-    }
-    if (g.positionNum == null) { g.fedexPoints = 0; continue; }
-    const arr = byPos.get(g.positionNum) ?? [];
-    arr.push(g);
-    byPos.set(g.positionNum, arr);
+// Sum the payout for slots [start .. start+count-1], 1-indexed positions.
+function slotSum(startPos: number, count: number): number {
+  let total = 0;
+  for (let i = 0; i < count; i++) {
+    total += PLAYOFF_POINTS[startPos - 1 + i] ?? 0;
   }
-  for (const [pos, players] of byPos) {
-    const pts = pointsForPosition(pos, players.length);
-    for (const p of players) p.fedexPoints = pts;
-  }
-  return field;
+  return total;
 }
 
 // ---------------------------------------------------------------------
@@ -82,20 +67,24 @@ async function fromESPN(): Promise<GolferRow[] | null> {
     );
     if (!res.ok) return null;
     const data = await res.json();
-    const comp = data?.events?.[0]?.competitions?.[0];
+    const event = data?.events?.[0];
+    const comp = event?.competitions?.[0];
     const players = comp?.competitors ?? [];
     if (!players.length) return null;
 
+    // Is the tournament actually underway? ESPN gives a status state:
+    // "pre" (scheduled) | "in" (live) | "post" (final). Before "in", there is
+    // no real leaderboard — so we must NOT assign positions or points.
+    const state: string =
+      comp?.status?.type?.state ?? event?.status?.type?.state ?? 'pre';
+    const hasStarted = state === 'in' || state === 'post';
+
     const rows: GolferRow[] = players.map((c: any): GolferRow => {
       const a = c.athlete ?? {};
-      // IMPORTANT: in ESPN's feed the golfer id lives on the COMPETITOR (c.id),
-      // and athlete often has no id (pre-tournament). Use c.id first.
+      // The golfer id lives on the COMPETITOR (c.id). The athlete object
+      // often has NO id before the tournament starts — so use c.id first.
       const externalId = String(c.id ?? a.id ?? c.uid ?? a.displayName);
-      const posStr =
-        c.status?.position?.displayName ??
-        c.status?.position?.id ??
-        String(c.order ?? '');
-      const posNum = parsePosition(posStr);
+
       const desc = (c.status?.type?.description ?? '').toLowerCase();
       const cut = /cut/.test(desc);
       const wd = /withdraw/.test(desc);
@@ -110,6 +99,12 @@ async function fromESPN(): Promise<GolferRow[] | null> {
         totalToPar = Number.isNaN(n) ? undefined : n;
       }
 
+      // Only trust a real position once play has started.
+      const posStr = hasStarted
+        ? (c.status?.position?.displayName ?? c.status?.position?.id ?? undefined)
+        : undefined;
+      const posNum = parsePosition(posStr);
+
       return {
         externalId,
         fullName: a.displayName ?? a.fullName ?? 'Unknown',
@@ -118,14 +113,34 @@ async function fromESPN(): Promise<GolferRow[] | null> {
         position: posStr || undefined,
         positionNum: posNum,
         today: Number(c.linescores?.at(-1)?.value) || undefined,
-        totalToPar,
-        fedexPoints: 0,
+        totalToPar: hasStarted ? totalToPar : 0, // pre-start: everyone at E
+        fedexPoints: 0, // filled in below, only when play has started
         status: cut ? 'cut' : wd ? 'wd' : dq ? 'dq'
               : c.status?.type?.completed ? 'finished' : 'active',
       };
     });
 
-    return applyTieAwarePoints(rows);
+    // Before the tournament starts: everyone at E / 0, no points, no board.
+    if (!hasStarted) return rows;
+
+    // Play has started — assign points from REAL positions with tie-splitting.
+    // Group golfers by their finishing position number.
+    const byPos = new Map<number, GolferRow[]>();
+    for (const r of rows) {
+      if (r.status === 'wd' || r.status === 'dq' || r.status === 'cut') continue;
+      if (r.positionNum == null) continue;
+      const list = byPos.get(r.positionNum) ?? [];
+      list.push(r);
+      byPos.set(r.positionNum, list);
+    }
+
+    for (const [pos, group] of byPos) {
+      // Players tied at `pos` occupy slots pos .. pos+count-1 and split them.
+      const shared = slotSum(pos, group.length) / group.length;
+      for (const r of group) r.fedexPoints = Math.round(shared * 100) / 100;
+    }
+
+    return rows;
   } catch {
     return null;
   }
@@ -150,11 +165,14 @@ async function fromDataGolf(): Promise<GolferRow[] | null> {
     const rows: GolferRow[] = players.map((p: any): GolferRow => {
       const posNum = parsePosition(String(p.current_pos ?? p.position ?? ''));
       const status =
-        /cut/i.test(p.current_pos ?? '') ? 'cut'
-        : /wd/i.test(p.current_pos ?? '') ? 'wd'
+        /wd/i.test(p.current_pos ?? '') ? 'wd'
         : /dq/i.test(p.current_pos ?? '') ? 'dq'
         : (p.thru === 'F' || p.round === 4) ? 'finished'
         : 'active';
+      const points =
+        posNum != null && (status === 'active' || status === 'finished')
+          ? (PLAYOFF_POINTS[posNum - 1] ?? 0)
+          : 0;
       return {
         externalId: String(p.dg_id),
         fullName: p.player_name,
@@ -165,13 +183,11 @@ async function fromDataGolf(): Promise<GolferRow[] | null> {
         positionNum: posNum,
         today: p.today,
         totalToPar: p.total ?? p.score,
-        fedexPoints: Number(p.fedex_cup_points ?? p.projected_fedex_points ?? 0) || 0,
+        fedexPoints: points,
         status,
-      } as GolferRow;
+      };
     });
-
-    const hasPoints = rows.some((r) => r.fedexPoints > 0);
-    return hasPoints ? rows : applyTieAwarePoints(rows);
+    return rows;
   } catch {
     return null;
   }
